@@ -21,6 +21,7 @@ Build a thin end-to-end invoice decision flow: invoice context -> deterministic 
  - The React dashboard supports bounded invoice/supplier search, evidence tabs, and a SQLite-backed Decision Log.
  - Approve/reject/escalate decisions are persisted locally in SQLite.
  - Bedrock Claude is optional; when configured it returns validated structured analysis, and when unavailable the API returns a rules-only fallback requiring human review.
+ - Each analysis includes an Analyst assessment, deterministic Red-Team Reviewer pass, and Red Gate. The reviewer is rules-based, not a second LLM agent.
 
  Only the six required curated CSVs are committed. Raw tables, Parquet duplicates, other data domains, and helper scripts are excluded. All provided records are synthetic and must not be described as real transactions or findings about actual suppliers. The `C:\Users\andradar\Downloads\center_data` folder contains unrelated fraud data and is not used.
 

@@ -29,6 +29,8 @@ Initial handoff:
 
 The API builds an ignored SQLite cache from the six CSVs at `backend/app/data/finance/finance.db`. Bedrock Claude is optional; when credentials are absent the API uses a rules-only fallback and requires human review. Approve/reject/escalate actions are persisted locally in `backend/app/data/decisions.db`.
 
+Each analysis includes the Analyst assessment, a deterministic Red-Team Reviewer pass, and a Red Gate. The reviewer may challenge an assessment below the control floor; the gate preserves or raises risk and never lowers it. The reviewer is not a second LLM agent.
+
 ## Team split
 
 ### You — Backend + AI lead

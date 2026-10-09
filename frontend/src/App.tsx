@@ -47,15 +47,35 @@ type AiAnalysis = {
   questions_for_analyst: string[];
 };
 
+type RedTeamReview = {
+  status: 'PASS' | 'CHALLENGE';
+  recommendation_floor: string;
+  summary: string;
+  checked_flags: string[];
+  challenged_flags: string[];
+  source: string;
+};
+
+type RedGate = {
+  status: 'BLOCK' | 'REVIEW' | 'CLEAR';
+  recommendation: string;
+  overrode_analyst: boolean;
+};
+
 type AnalysisResponse = {
   invoice: Record<string, any>;
   supplier: Record<string, any>;
   po: Record<string, any> | null;
   exceptions: Array<Record<string, any>>;
   invoice_lines?: Array<Record<string, any>>;
+  payments?: Array<Record<string, any>>;
+  previous_invoices?: Array<Record<string, any>>;
+  duplicate_matches?: Array<Record<string, any>>;
   checks: Check[];
   analysis?: AiAnalysis;
   ai_analysis?: AiAnalysis;
+  red_team_review?: RedTeamReview;
+  red_gate?: RedGate;
   recommendation: string;
   decision_story: string[];
   available_invoice_ids: string[];
@@ -114,6 +134,15 @@ const MOCK_ANALYSIS: AnalysisResponse = {
     questions_for_analyst: ['Was the PO amended after invoice issuance?', 'Should this be routed to a specialist approver?'],
   },
   recommendation: 'REVIEW',
+  red_team_review: {
+    status: 'PASS',
+    recommendation_floor: 'REVIEW',
+    summary: 'Analyst recommendation meets or exceeds the deterministic control floor.',
+    checked_flags: ['PO_AMOUNT_EXCEEDED', 'EXISTING_EXCEPTION'],
+    challenged_flags: [],
+    source: 'deterministic_control_review',
+  },
+  red_gate: { status: 'REVIEW', recommendation: 'REVIEW', overrode_analyst: false },
   decision_story: [
     'Invoice loaded',
     'PO and supplier context retrieved',
@@ -138,6 +167,7 @@ type DecisionAction = 'Approve' | 'Reject' | 'Escalate';
 type DecisionActionCode = 'approve' | 'reject' | 'escalate';
 type DemoRole = 'AP Analyst' | 'AP Team Lead' | 'AP Manager';
 type WorkspacePage = 'Invoices' | 'Decision Log';
+type InvoiceView = 'review' | 'data';
 type DecisionRecord = { id: number; invoice_id: string; action: DecisionActionCode; created_at: string };
 type DecisionFilter = 'all' | DecisionActionCode;
 
@@ -149,6 +179,19 @@ const CONTEXT_TABS: Array<{ id: ContextTab; label: string }> = [
   { id: 'payments', label: 'Payments' },
   { id: 'exceptions', label: 'Exceptions' },
 ];
+
+const MANUAL_REVIEW_GUIDANCE: Record<string, { lookIn: string; verify: string }> = {
+  MISSING_PO: { lookIn: 'Invoice record, Purchase Order', verify: 'Confirm the invoice has an approved purchase order before processing.' },
+  PO_NOT_FOUND: { lookIn: 'Invoice record, Purchase Order', verify: 'Locate and verify the referenced purchase order.' },
+  PO_AMOUNT_EXCEEDED: { lookIn: 'Invoice amount, Purchase Order amount, Invoice Lines', verify: 'Compare invoiced total and line items against the PO value and scope.' },
+  PO_CURRENCY_MISMATCH: { lookIn: 'Invoice record, Purchase Order', verify: 'Confirm both records use the expected currency before comparing amounts.' },
+  DUPLICATE_INVOICE: { lookIn: 'Duplicate Matches, Previous Invoices', verify: 'Compare supplier, invoice number, date, and processing status.' },
+  NEAR_DUPLICATE: { lookIn: 'Previous Invoices, Invoice Lines', verify: 'Compare invoice number, date, amount, and line items; similarity alone is not proof.' },
+  EXISTING_EXCEPTION: { lookIn: 'Exceptions', verify: 'Read the exception resolution and confirm it addresses the current invoice.' },
+  BANK_DETAILS_CHANGED: { lookIn: 'Exceptions, Supplier', verify: 'Verify the bank change through an independently trusted supplier contact.' },
+  APPROVAL_POLICY_UNVERIFIED: { lookIn: 'Invoice approval level, Supplier approval threshold', verify: 'Confirm the required approver against the organization approval policy.' },
+  PAYMENT_STATUS: { lookIn: 'Payments, Invoice status', verify: 'Confirm payment state and amount before taking further action.' },
+};
 
 const NAV_ITEMS = [
   { label: 'Dashboard', icon: LayoutDashboard },
@@ -184,6 +227,24 @@ function formatTimestamp(value: string) {
     : new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date);
 }
 
+function EvidenceTable({ caption, columns, rows, emptyMessage, rowTones = [] }: { caption: string; columns: string[]; rows: string[][]; emptyMessage: string; rowTones?: Array<'warning' | 'fail' | undefined> }) {
+  if (!rows.length) return <div className="empty-evidence">{emptyMessage}</div>;
+
+  return (
+    <div className="evidence-table-wrap">
+      <table className="evidence-table">
+        <caption>{caption}</caption>
+        <thead><tr>{columns.map((column) => <th key={column} scope="col">{column}</th>)}</tr></thead>
+        <tbody>{rows.map((row, rowIndex) => (
+          <tr className={rowTones[rowIndex] ? `evidence-row-${rowTones[rowIndex]}` : undefined} key={`${caption}-${rowIndex}`}>
+            {row.map((value, columnIndex) => <td key={`${rowIndex}-${columnIndex}`}>{value || '—'}</td>)}
+          </tr>
+        ))}</tbody>
+      </table>
+    </div>
+  );
+}
+
 function App() {
   const [selectedInvoiceId, setSelectedInvoiceId] = useState('INV0000001');
   const [demoRole, setDemoRole] = useState<DemoRole>('AP Analyst');
@@ -192,6 +253,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [apiUnavailable, setApiUnavailable] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>('all');
+  const [invoiceView, setInvoiceView] = useState<InvoiceView>('review');
   const [searchQuery, setSearchQuery] = useState('');
   const [decisionAction, setDecisionAction] = useState<DecisionAction | null>(null);
   const [decisionSaving, setDecisionSaving] = useState(false);
@@ -305,6 +367,23 @@ function App() {
   };
   const checks = analysis.checks ?? [];
   const exceptions = analysis.exceptions ?? [];
+  const manualReviewSignals = checks
+    .filter((check) => check.status !== 'pass')
+    .map((check) => ({
+      ...check,
+      lookIn: MANUAL_REVIEW_GUIDANCE[check.code]?.lookIn ?? 'Invoice record and Hard Rule Checks',
+      verify: MANUAL_REVIEW_GUIDANCE[check.code]?.verify ?? check.details,
+    }));
+  if (!analysis.ai_enabled) {
+    manualReviewSignals.push({
+      code: 'AI_UNAVAILABLE',
+      status: 'warning',
+      title: 'AI assessment unavailable',
+      details: 'The recommendation uses deterministic rules only.',
+      lookIn: 'Analyst assessment and Hard Rule Checks',
+      verify: 'Review the listed evidence and rule results manually.',
+    });
+  }
   const currency = invoice.currency ?? 'USD';
   const passedChecks = checks.filter((check) => check.status === 'pass').length;
   const currentIndex = Math.max(0, availableInvoiceIds.indexOf(selectedInvoiceId));
@@ -499,6 +578,184 @@ function App() {
     );
   };
 
+  const renderInvoiceDataTables = () => {
+    const show = (_tab: string) => true;
+    const invoiceCurrency = String(invoice.currency ?? 'USD');
+    const duplicateMatches = analysis.duplicate_matches ?? [];
+    const issueTone = (codes: string[]): 'warning' | 'fail' | undefined => {
+      if (checks.some((check) => codes.includes(check.code) && check.status === 'fail')) return 'fail';
+      if (checks.some((check) => codes.includes(check.code) && check.status === 'warning')) return 'warning';
+      return undefined;
+    };
+    const repeatedTone = (count: number, codes: string[]) => Array.from({ length: count }, () => issueTone(codes));
+
+    return (
+      <div className="evidence-grid">
+        {show('invoice') ? (
+          <article className="evidence-card evidence-wide">
+            <div className="evidence-card-heading"><span className="evidence-icon"><FileText size={17} /></span><h3>Invoice Record</h3><span className="evidence-link">{invoice.invoice_id}</span></div>
+            <EvidenceTable
+              caption="Invoice fields used in analysis"
+              columns={['Field', 'Value']}
+              rows={[
+                ['Invoice ID', String(invoice.invoice_id ?? '')], ['Invoice number', String(invoice.invoice_number ?? '')],
+                ['Supplier ID', String(invoice.supplier_id ?? '')], ['PO ID', String(invoice.po_id ?? '')],
+                ['Invoice date', formatDate(invoice.invoice_date)], ['Due date', formatDate(invoice.due_date)],
+                ['Received at', formatDate(invoice.received_at)], ['Net amount', formatMoney(invoice.net_amount, invoiceCurrency)],
+                ['Tax amount', formatMoney(invoice.tax_amount, invoiceCurrency)], ['Gross amount', formatMoney(invoice.gross_amount, invoiceCurrency)],
+                ['Amount USD', formatMoney(invoice.amount_usd, 'USD')], ['Currency', invoiceCurrency],
+                ['Approval level', String(invoice.approval_level ?? '')], ['Channel', String(invoice.channel ?? '')],
+                ['OCR confidence', invoice.ocr_confidence == null ? '' : `${Math.round(Number(invoice.ocr_confidence) * 100)}%`],
+                ['Processor', String(invoice.processor_employee_id ?? '')], ['Status', String(invoice.status ?? '')],
+                ['Payment status', String(invoice.payment_status ?? '')],
+              ]}
+              rowTones={[
+                undefined, undefined, undefined, issueTone(['MISSING_PO', 'PO_NOT_FOUND']), undefined, undefined,
+                undefined, undefined, undefined, issueTone(['PO_AMOUNT_EXCEEDED']), undefined, undefined,
+                issueTone(['APPROVAL_POLICY_UNVERIFIED']), undefined, undefined, undefined, undefined,
+                issueTone(['PAYMENT_STATUS']),
+              ]}
+              emptyMessage="Invoice fields are unavailable."
+            />
+          </article>
+        ) : null}
+
+        {show('purchase-order') ? (
+          <article className="evidence-card po-card">
+            <div className="evidence-card-heading"><span className="evidence-icon"><FileText size={17} /></span><h3>Purchase Order</h3><span className="evidence-link">{analysis.po?.po_id ?? 'Not linked'}</span></div>
+            <EvidenceTable
+              caption="Purchase order fields"
+              columns={['Field', 'Value']}
+              rows={analysis.po ? [
+                ['PO ID', String(analysis.po.po_id ?? '')], ['Supplier ID', String(analysis.po.supplier_id ?? '')],
+                ['PO date', formatDate(analysis.po.po_date)], ['Amount', formatMoney(analysis.po.po_amount, String(analysis.po.currency ?? invoiceCurrency))],
+                ['Currency', String(analysis.po.currency ?? '')], ['Cost center', String(analysis.po.cost_center_id ?? '')],
+                ['Requester', String(analysis.po.requester_employee_id ?? '')], ['Approver', String(analysis.po.approver_employee_id ?? '')],
+                ['Status', String(analysis.po.status ?? '')],
+              ] : []}
+              rowTones={analysis.po ? [issueTone(['PO_NOT_FOUND']), undefined, undefined, issueTone(['PO_AMOUNT_EXCEEDED']), undefined, undefined, undefined, undefined, undefined] : []}
+              emptyMessage="No purchase order is linked to this invoice."
+            />
+          </article>
+        ) : null}
+
+        {show('invoice-lines') ? (
+          <article className="evidence-card evidence-wide">
+            <div className="evidence-card-heading"><span className="evidence-icon"><FileText size={17} /></span><h3>Invoice Lines</h3><span className="count-chip">{analysis.invoice_lines?.length ?? 0}</span></div>
+            <EvidenceTable
+              caption="Invoice line items"
+              columns={['Line ID', 'Invoice ID', 'Line', 'Description', 'Quantity', 'Unit price', 'Line amount', 'GL account', 'Cost center']}
+              rows={(analysis.invoice_lines ?? []).map((line) => [
+                String(line.invoice_line_id ?? ''), String(line.invoice_id ?? ''), String(line.line_no ?? ''),
+                String(line.description ?? ''), Number(line.quantity ?? 0).toLocaleString(),
+                formatMoney(line.unit_price, invoiceCurrency), formatMoney(line.line_amount, invoiceCurrency),
+                String(line.gl_account ?? ''), String(line.cost_center_id ?? ''),
+              ])}
+              rowTones={repeatedTone(analysis.invoice_lines?.length ?? 0, ['PO_AMOUNT_EXCEEDED'])}
+              emptyMessage="No line-item records are available."
+            />
+          </article>
+        ) : null}
+
+        {show('history') ? (
+          <article className="evidence-card evidence-wide">
+            <div className="evidence-card-heading"><span className="evidence-icon"><History size={17} /></span><h3>Supplier Record</h3><span className="count-chip">{supplier.exception_history ?? 0} prior exceptions</span></div>
+            <EvidenceTable
+              caption="Supplier fields used in analysis"
+              columns={['Field', 'Value']}
+              rows={[
+                ['Supplier ID', String(supplier.supplier_id ?? '')], ['Entity ID', String(supplier.entity_id ?? '')],
+                ['Name', String(supplier.supplier_name ?? '')], ['Category', String(supplier.category ?? '')],
+                ['Country', String(supplier.country ?? '')], ['Payment terms', supplier.payment_terms_days == null ? '' : `${supplier.payment_terms_days} days`],
+                ['Risk tier', String(supplier.risk_tier ?? supplier.risk_band ?? '')], ['Preferred', String(supplier.preferred ?? '')],
+                ['Onboarded', formatDate(supplier.onboarded_date)], ['Status', String(supplier.status ?? '')],
+                ['Exception history', String(supplier.exception_history ?? 0)],
+              ]}
+              emptyMessage="Supplier details are unavailable."
+            />
+          </article>
+        ) : null}
+
+        {show('history') ? (
+          <article className="evidence-card evidence-wide">
+            <div className="evidence-card-heading"><span className="evidence-icon"><History size={17} /></span><h3>Previous Invoices</h3><span className="count-chip">{analysis.previous_invoices?.length ?? 0}</span></div>
+            <EvidenceTable
+              caption="Prior invoices for this supplier"
+              columns={['Invoice ID', 'Invoice number', 'Invoice date', 'Gross amount', 'Amount USD', 'Currency', 'Status']}
+              rows={(analysis.previous_invoices ?? []).map((item) => [
+                String(item.invoice_id ?? ''), String(item.invoice_number ?? ''), formatDate(item.invoice_date),
+                formatMoney(item.gross_amount, String(item.currency ?? invoiceCurrency)), formatMoney(item.amount_usd, 'USD'),
+                String(item.currency ?? ''), String(item.status ?? ''),
+              ])}
+              rowTones={repeatedTone(analysis.previous_invoices?.length ?? 0, ['NEAR_DUPLICATE'])}
+              emptyMessage="No previous invoices were included in this analysis."
+            />
+          </article>
+        ) : null}
+
+        {show('history') ? (
+          <article className="evidence-card evidence-wide">
+            <div className="evidence-card-heading"><span className="evidence-icon"><AlertTriangle size={17} /></span><h3>Duplicate Matches</h3><span className="count-chip">{duplicateMatches.length}</span></div>
+            <EvidenceTable
+              caption="Exact duplicate invoice matches"
+              columns={['Invoice ID', 'Invoice number', 'Supplier ID', 'Invoice date', 'Status']}
+              rows={duplicateMatches.map((item) => [String(item.invoice_id ?? ''), String(item.invoice_number ?? ''), String(item.supplier_id ?? ''), formatDate(item.invoice_date), String(item.status ?? '')])}
+              rowTones={repeatedTone(duplicateMatches.length, ['DUPLICATE_INVOICE'])}
+              emptyMessage="No duplicate matches were found."
+            />
+          </article>
+        ) : null}
+
+        {show('payments') ? (
+          <article className="evidence-card">
+            <div className="evidence-card-heading"><span className="evidence-icon"><CreditCard size={17} /></span><h3>Payments</h3><span className="count-chip">{analysis.payments?.length ?? 0}</span></div>
+            <EvidenceTable
+              caption="Payment records linked to this invoice"
+              columns={['Payment ID', 'Invoice ID', 'Paid at', 'Amount', 'Currency', 'Method', 'Payment run', 'Days vs due']}
+              rows={(analysis.payments ?? []).map((payment) => [
+                String(payment.payment_id ?? ''), String(payment.invoice_id ?? ''), formatDate(payment.paid_at),
+                formatMoney(payment.amount, String(payment.currency ?? invoiceCurrency)),
+                String(payment.currency ?? ''), String(payment.method ?? ''), String(payment.payment_run_id ?? ''),
+                payment.days_vs_due == null ? '' : String(payment.days_vs_due),
+              ])}
+              rowTones={repeatedTone(analysis.payments?.length ?? 0, ['PAYMENT_STATUS'])}
+              emptyMessage="No payment records are linked to this invoice."
+            />
+          </article>
+        ) : null}
+
+        {show('exceptions') ? (
+          <article className="evidence-card evidence-wide">
+            <div className="evidence-card-heading"><span className="evidence-icon"><AlertTriangle size={17} /></span><h3>Existing Exceptions</h3><span className="count-chip">{exceptions.length}</span></div>
+            <EvidenceTable
+              caption="Exception records linked to this invoice"
+              columns={['Exception ID', 'Invoice ID', 'Type', 'Raised', 'Resolved', 'Resolver', 'Resolution']}
+              rows={exceptions.map((item) => [
+                String(item.exception_id ?? ''), String(item.invoice_id ?? ''), String(item.type ?? item.exception_type ?? ''), formatDate(item.raised_at),
+                formatDate(item.resolved_at), String(item.resolver_employee_id ?? ''), String(item.resolution ?? item.description ?? ''),
+              ])}
+              rowTones={repeatedTone(exceptions.length, ['BANK_DETAILS_CHANGED', 'EXISTING_EXCEPTION'])}
+              emptyMessage="No exceptions are attached to this invoice."
+            />
+          </article>
+        ) : null}
+
+        {show('exceptions') ? (
+          <article className="evidence-card evidence-wide">
+            <div className="evidence-card-heading"><span className="evidence-icon"><ShieldCheck size={17} /></span><h3>Rule Checks</h3><span className="count-chip">{checks.length}</span></div>
+            <EvidenceTable
+              caption="Deterministic checks applied to this invoice"
+              columns={['Check', 'Status', 'Details']}
+              rows={checks.map((check) => [check.title, statusStyleMap[check.status].label, check.details])}
+              rowTones={checks.map((check) => check.status === 'fail' ? 'fail' : check.status === 'warning' ? 'warning' : undefined)}
+              emptyMessage="No rule checks are available."
+            />
+          </article>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -596,6 +853,10 @@ function App() {
               <p className="page-subtitle">{supplier.supplier_name ?? invoice.supplier_name ?? 'Supplier'} <span>·</span> {invoice.invoice_id ?? selectedInvoiceId}</p>
             </div>
             <div className="invoice-controls">
+              <div className="invoice-view-toggle" role="group" aria-label="Invoice view">
+                <button type="button" aria-pressed={invoiceView === 'review'} onClick={() => setInvoiceView('review')}>Review</button>
+                <button type="button" aria-pressed={invoiceView === 'data'} onClick={() => setInvoiceView('data')}>Data</button>
+              </div>
               <button className="icon-button control-button" aria-label="Previous invoice" onClick={() => selectAdjacentInvoice(-1)}>
                 <ChevronLeft size={17} />
               </button>
@@ -615,6 +876,7 @@ function App() {
             {loading ? <span className="loading-label"><span className="loading-spinner" /> Analyzing</span> : null}
           </div>
 
+          {invoiceView === 'review' ? <>
           <section className="metrics-grid" aria-label="Invoice overview">
             <article className="metric-card metric-green">
               <span className="metric-icon"><FileText size={20} /></span>
@@ -720,6 +982,20 @@ function App() {
                 })}
               </div>
 
+              {analysis.red_team_review ? (
+                <div className={`red-team-review red-team-${analysis.red_team_review.status.toLowerCase()}`}>
+                  <div className="red-team-review-heading">
+                    <div><h3>Red-Team Reviewer</h3><span>Independent deterministic control pass</span></div>
+                    <strong>{analysis.red_team_review.status}</strong>
+                  </div>
+                  <p>{analysis.red_team_review.summary}</p>
+                  {analysis.red_team_review.challenged_flags.length ? <div className="red-team-flags">Challenged: {analysis.red_team_review.challenged_flags.join(', ')}</div> : null}
+                  {analysis.red_gate ? (
+                    <div className="red-gate-outcome"><span>Red Gate · {analysis.red_gate.status}</span><strong>{analysis.red_gate.recommendation}</strong></div>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="decision-actions">
                 <button className={`decision-button action-approve${decisionAction === 'Approve' ? ' action-selected' : ''}`} aria-pressed={decisionAction === 'Approve'} disabled={decisionSaving} onClick={() => void saveDecision('Approve')}><Check size={16} />Approve</button>
                 <button className={`decision-button action-reject${decisionAction === 'Reject' ? ' action-selected' : ''}`} aria-pressed={decisionAction === 'Reject'} disabled={decisionSaving} onClick={() => void saveDecision('Reject')}><CircleX size={16} />Reject</button>
@@ -743,6 +1019,32 @@ function App() {
               ))}
             </ol>
           </section>
+
+          </> : (
+            <section className="invoice-data-view" aria-label="Invoice data and manual checks">
+              <section className="surface manual-review-panel" aria-labelledby="manual-review-heading">
+                <div className="panel-heading">
+                  <div><h2 id="manual-review-heading">Manual Check Signals</h2><span className="panel-kicker">Start with these records before making a decision</span></div>
+                  <span className="count-chip">{manualReviewSignals.length} signals</span>
+                </div>
+                <EvidenceTable
+                  caption={`Checks requiring analyst verification for ${invoice.invoice_id ?? selectedInvoiceId}`}
+                  columns={['Signal', 'Severity', 'Look in', 'Verify']}
+                  rows={manualReviewSignals.map((signal) => [signal.title, statusStyleMap[signal.status].label, signal.lookIn, signal.verify])}
+                  rowTones={manualReviewSignals.map((signal) => signal.status === 'fail' ? 'fail' : 'warning')}
+                  emptyMessage="No flagged checks. Confirm the recommendation and approval policy before proceeding."
+                />
+              </section>
+
+              <section className="invoice-data-panel" aria-labelledby="invoice-data-heading">
+                <div className="story-heading">
+                  <div><h2 id="invoice-data-heading">Source Tables</h2><span className="panel-kicker">Invoice-related records used by the analysis</span></div>
+                  <span className="story-live">{invoice.invoice_id ?? selectedInvoiceId}</span>
+                </div>
+                {renderInvoiceDataTables()}
+              </section>
+            </section>
+          )}
 
           <footer className="page-footer"><span>OrbitIQ · Invoice Intelligence</span><span>Demo data only · Decisions stored locally</span></footer>
           </> : <>

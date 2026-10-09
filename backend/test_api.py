@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from backend.app.main import app
 from backend.app.services import decision_log, finance_data, invoice_analysis
 from backend.app.services.bedrock_analysis import BedrockAnalysisError, assess_evidence
+from backend.app.services.red_team_review import apply_red_gate, review_recommendation
 
 TEST_INVOICE_ID = "INV0000001"
 
@@ -51,10 +52,14 @@ class InvoiceApiTests(unittest.TestCase):
         self.assertEqual(payload["data_source"], "curated synthetic finance CSVs")
         self.assertEqual(payload["invoice"]["invoice_id"], TEST_INVOICE_ID)
         self.assertTrue(payload["invoice_lines"])
+        self.assertIn("payments", payload)
+        self.assertIn("previous_invoices", payload)
         self.assertFalse(payload["ai_enabled"])
         self.assertEqual(payload["analysis"]["source"], "rule_based_fallback")
         self.assertNotIn("ai_analysis", payload)
         self.assertEqual(payload["recommendation"], "REVIEW")
+        self.assertEqual(payload["red_team_review"]["status"], "PASS")
+        self.assertEqual(payload["red_gate"]["status"], "REVIEW")
         self.assertTrue(payload["final_decision"]["human_review_required"])
         self.assertIn("invoice_lines", mocked_assessment.call_args.args[0])
 
@@ -76,6 +81,9 @@ class InvoiceApiTests(unittest.TestCase):
             payload = self.client.get(f"/api/invoices/{TEST_INVOICE_ID}/analyze").json()
 
         self.assertEqual(payload["recommendation"], "ESCALATE")
+        self.assertEqual(payload["red_team_review"]["status"], "CHALLENGE")
+        self.assertIn("DUPLICATE_INVOICE", payload["red_team_review"]["challenged_flags"])
+        self.assertTrue(payload["red_gate"]["overrode_analyst"])
         self.assertIn("DUPLICATE_INVOICE", payload["final_decision"]["triggered_by"])
 
     def test_unknown_po_cannot_pass_hard_gate(self) -> None:
@@ -84,14 +92,27 @@ class InvoiceApiTests(unittest.TestCase):
         context["invoice"]["po_id"] = "PO-UNKNOWN"
         context["po"] = None
 
+        unsafe_assessment = {
+            "summary": "Routine invoice", "risk_level": "low", "recommendation": "AUTO-PROCESS CANDIDATE",
+            "reasons": ["No issues found"], "evidence_ids": [TEST_INVOICE_ID], "questions_for_analyst": [],
+        }
         with (
             patch.object(invoice_analysis, "get_invoice_context", return_value=context),
-            patch.object(invoice_analysis, "assess_evidence", side_effect=BedrockAnalysisError("not configured", "NOT_CONFIGURED")),
+            patch.object(invoice_analysis, "assess_evidence", return_value=unsafe_assessment),
         ):
             payload = self.client.get(f"/api/invoices/{TEST_INVOICE_ID}/analyze").json()
 
         self.assertEqual(payload["recommendation"], "ESCALATE")
+        self.assertEqual(payload["red_team_review"]["status"], "CHALLENGE")
         self.assertIn("PO_NOT_FOUND", payload["final_decision"]["triggered_by"])
+
+    def test_red_team_accepts_safe_recommendation_and_gate_never_lowers_it(self) -> None:
+        review = review_recommendation("ESCALATE", [], True)
+        gate = apply_red_gate("ESCALATE", review)
+
+        self.assertEqual(review["status"], "PASS")
+        self.assertEqual(gate["recommendation"], "ESCALATE")
+        self.assertFalse(gate["overrode_analyst"])
 
     def test_decisions_are_persisted_and_can_be_listed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:

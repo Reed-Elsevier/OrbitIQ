@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from backend.app.services.bedrock_analysis import BedrockAnalysisError, assess_evidence
 from backend.app.services.finance_data import get_invoice_context, get_invoice_count, list_invoices
+from backend.app.services.red_team_review import apply_red_gate, review_recommendation
 
 logger = logging.getLogger(__name__)
 
@@ -143,20 +144,15 @@ def analyze_invoice(invoice_id: str) -> Dict[str, Any] | None:
     ai_analysis["evidence"] = ai_analysis["evidence_ids"]
     ai_analysis["source"] = "bedrock_claude" if ai_enabled else "rule_based_fallback"
 
-    decision_rank = {"AUTO-PROCESS CANDIDATE": 0, "REVIEW": 1, "ESCALATE": 2}
-    gate_recommendation = "AUTO-PROCESS CANDIDATE"
-    if {"MISSING_PO", "PO_NOT_FOUND", "DUPLICATE_INVOICE", "BANK_DETAILS_CHANGED"}.intersection(rule_flags):
-        gate_recommendation = "ESCALATE"
-    elif rule_flags or not ai_enabled:
-        gate_recommendation = "REVIEW"
-    recommendation = max(
-        (ai_analysis["recommendation"], gate_recommendation),
-        key=decision_rank.__getitem__,
-    )
+    red_team_review = review_recommendation(ai_analysis["recommendation"], rule_flags, ai_enabled)
+    red_gate = apply_red_gate(ai_analysis["recommendation"], red_team_review)
+    recommendation = red_gate["recommendation"]
     triggered_by = list(rule_flags)
     if not ai_enabled:
         triggered_by.append("AI_UNAVAILABLE")
-    elif decision_rank[ai_analysis["recommendation"]] > decision_rank[gate_recommendation]:
+    if red_team_review["status"] == "CHALLENGE":
+        triggered_by.append("RED_TEAM_REVIEW")
+    elif ai_enabled and recommendation != ai_analysis["recommendation"]:
         triggered_by.append("CLAUDE_RECOMMENDATION")
 
     decision_story = [
@@ -165,6 +161,7 @@ def analyze_invoice(invoice_id: str) -> Dict[str, Any] | None:
         "Exception and payment history checked",
         "Deterministic checks executed",
         "Claude evidence assessment validated" if ai_enabled else "AI unavailable; rule-based fallback generated and manual review required",
+        f"Red-Team Reviewer challenged the recommendation to {red_team_review['recommendation_floor']}" if red_team_review["status"] == "CHALLENGE" else "Red-Team Reviewer found no unsafe recommendation",
         "Hard gate applied",
         "Human review recommendation recorded",
     ]
@@ -185,10 +182,13 @@ def analyze_invoice(invoice_id: str) -> Dict[str, Any] | None:
         "payments": payments,
         "checks": checks,
         "duplicate_matches": duplicate_matches,
+        "previous_invoices": previous_invoices[:10],
         "analysis": ai_analysis,
         **({"ai_analysis": ai_analysis} if ai_enabled else {}),
         "recommendation": recommendation,
-        "final_decision": {"recommendation": recommendation, "triggered_by": triggered_by, "human_review_required": True},
+        "red_team_review": red_team_review,
+        "red_gate": red_gate,
+        "final_decision": {"recommendation": recommendation, "triggered_by": triggered_by, "human_review_required": True, "red_gate": red_gate},
         "decision_story": decision_story,
         "available_invoice_ids": [item["invoice_id"] for item in list_invoices(limit=25)],
         "invoice_count": get_invoice_count(),
