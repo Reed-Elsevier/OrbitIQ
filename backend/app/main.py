@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend.app.services.decision_log import list_decisions, record_decision
+from backend.app.services.finance_data import get_invoice_count, list_invoices
 from backend.app.services.invoice_analysis import analyze_invoice
 
 app = FastAPI(title="OrbitIQ Invoice Intelligence Copilot")
@@ -26,6 +27,11 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/invoices")
+def search_invoices(query: str = "", limit: int = 25) -> dict:
+    return {"items": list_invoices(query, limit), "total_count": get_invoice_count()}
 
 
 @app.get("/api/invoices/{invoice_id}/analyze")

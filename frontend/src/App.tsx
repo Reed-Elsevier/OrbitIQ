@@ -28,6 +28,8 @@ import {
   Users,
 } from 'lucide-react';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+
 type CheckStatus = 'pass' | 'warning' | 'fail';
 
 type Check = {
@@ -51,13 +53,24 @@ type AnalysisResponse = {
   supplier: Record<string, any>;
   po: Record<string, any> | null;
   exceptions: Array<Record<string, any>>;
+  invoice_lines?: Array<Record<string, any>>;
   checks: Check[];
-  ai_analysis: AiAnalysis;
+  analysis?: AiAnalysis;
+  ai_analysis?: AiAnalysis;
   recommendation: string;
   decision_story: string[];
   available_invoice_ids: string[];
+  invoice_count?: number;
   data_source: string;
   ai_enabled: boolean;
+};
+
+type InvoiceOption = {
+  invoice_id: string;
+  supplier_name: string;
+  gross_amount: number;
+  currency: string;
+  status: string;
 };
 
 const MOCK_ANALYSIS: AnalysisResponse = {
@@ -121,7 +134,7 @@ const statusStyleMap: Record<CheckStatus, { label: string; className: string }> 
   fail: { label: 'FAIL', className: 'status-fail' },
 };
 
-type ContextTab = 'all' | 'purchase-order' | 'history' | 'payments' | 'exceptions';
+type ContextTab = 'all' | 'purchase-order' | 'invoice-lines' | 'history' | 'payments' | 'exceptions';
 type DecisionAction = 'Approve' | 'Reject' | 'Escalate';
 type DecisionActionCode = 'approve' | 'reject' | 'escalate';
 type WorkspacePage = 'Invoices' | 'Decision Log';
@@ -131,6 +144,7 @@ type DecisionFilter = 'all' | DecisionActionCode;
 const CONTEXT_TABS: Array<{ id: ContextTab; label: string }> = [
   { id: 'all', label: 'All' },
   { id: 'purchase-order', label: 'Purchase Order' },
+  { id: 'invoice-lines', label: 'Invoice Lines' },
   { id: 'history', label: 'History' },
   { id: 'payments', label: 'Payments' },
   { id: 'exceptions', label: 'Exceptions' },
@@ -171,8 +185,9 @@ function formatTimestamp(value: string) {
 }
 
 function App() {
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState('INV-1001');
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState('INV0000001');
   const [analysis, setAnalysis] = useState<AnalysisResponse>(MOCK_ANALYSIS);
+  const [invoiceOptions, setInvoiceOptions] = useState<InvoiceOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [apiUnavailable, setApiUnavailable] = useState(false);
   const [contextTab, setContextTab] = useState<ContextTab>('all');
@@ -194,7 +209,7 @@ function App() {
     const loadInvoice = async () => {
       setLoading(true);
       try {
-        const response = await fetch(`http://localhost:8000/api/invoices/${selectedInvoiceId}/analyze`);
+        const response = await fetch(`${API_BASE_URL}/api/invoices/${selectedInvoiceId}/analyze`);
         if (!response.ok) {
           throw new Error('Live API unavailable');
         }
@@ -223,6 +238,35 @@ function App() {
   }, [selectedInvoiceId]);
 
   useEffect(() => {
+    if (activePage !== 'Invoices') return;
+
+    let ignore = false;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/invoices?query=${encodeURIComponent(searchQuery)}&limit=25`);
+        if (!response.ok) throw new Error('Invoice search unavailable');
+        const payload = (await response.json()) as { items: InvoiceOption[] };
+        if (!ignore) setInvoiceOptions(payload.items);
+      } catch {
+        if (!ignore) {
+          setInvoiceOptions(MOCK_ANALYSIS.available_invoice_ids.map((invoice_id) => ({
+            invoice_id,
+            supplier_name: 'Demo supplier',
+            gross_amount: 0,
+            currency: 'USD',
+            status: 'demo',
+          })));
+        }
+      }
+    }, 150);
+
+    return () => {
+      ignore = true;
+      window.clearTimeout(timer);
+    };
+  }, [activePage, searchQuery]);
+
+  useEffect(() => {
     if (activePage !== 'Decision Log') return;
 
     let ignore = false;
@@ -230,7 +274,7 @@ function App() {
       setDecisionLogLoading(true);
       setDecisionLogError('');
       try {
-        const response = await fetch('http://localhost:8000/api/decisions');
+        const response = await fetch(`${API_BASE_URL}/api/decisions`);
         if (!response.ok) throw new Error('Decision log unavailable');
         const records = (await response.json()) as DecisionRecord[];
         if (!ignore) setDecisionRecords(records);
@@ -250,6 +294,14 @@ function App() {
     : MOCK_ANALYSIS.available_invoice_ids;
   const invoice = analysis.invoice;
   const supplier = analysis.supplier;
+  const aiAnalysis: AiAnalysis = analysis.analysis ?? analysis.ai_analysis ?? {
+    summary: 'AI analysis is unavailable; use the deterministic checks below.',
+    risk_level: 'medium',
+    recommendation: 'REVIEW',
+    reasons: ['Review the deterministic control results.'],
+    evidence: [],
+    questions_for_analyst: ['Can the approval policy be verified?'],
+  };
   const checks = analysis.checks ?? [];
   const exceptions = analysis.exceptions ?? [];
   const currency = invoice.currency ?? 'USD';
@@ -286,15 +338,27 @@ function App() {
     setDecisionNoticeType(null);
   };
 
-  const searchInvoice = () => {
-    const query = searchQuery.trim().toLowerCase();
+  const searchInvoice = async () => {
+    const query = searchQuery.trim();
     if (!query) return;
-    const matchingInvoice = availableInvoiceIds.find((invoiceId) => invoiceId.toLowerCase() === query)
-      ?? availableInvoiceIds.find((invoiceId) => invoiceId.toLowerCase().startsWith(query));
+    let options = invoiceOptions;
+    if (!options.some((option) => option.invoice_id.toLowerCase() === query.toLowerCase())) {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/invoices?query=${encodeURIComponent(query)}&limit=25`);
+        if (!response.ok) throw new Error('Invoice search unavailable');
+        const payload = (await response.json()) as { items: InvoiceOption[] };
+        options = payload.items;
+        setInvoiceOptions(options);
+      } catch {
+        options = MOCK_ANALYSIS.available_invoice_ids.map((invoice_id) => ({ invoice_id, supplier_name: 'Demo supplier', gross_amount: 0, currency: 'USD', status: 'demo' }));
+      }
+    }
+    const matchingInvoice = options.find((option) => option.invoice_id.toLowerCase() === query.toLowerCase())
+      ?? options[0];
     if (matchingInvoice) {
-      setSelectedInvoiceId(matchingInvoice);
+      setSelectedInvoiceId(matchingInvoice.invoice_id);
       setDecisionAction(null);
-      setSearchQuery(matchingInvoice);
+      setSearchQuery(matchingInvoice.invoice_id);
       setDecisionNotice('');
       setDecisionNoticeType(null);
     }
@@ -307,7 +371,7 @@ function App() {
     setDecisionNotice('Saving decision...');
 
     try {
-      const response = await fetch(`http://localhost:8000/api/invoices/${selectedInvoiceId}/decisions`, {
+      const response = await fetch(`${API_BASE_URL}/api/invoices/${selectedInvoiceId}/decisions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: action.toLowerCase() }),
@@ -354,6 +418,29 @@ function App() {
               </>
             ) : (
               <div className="empty-evidence">No purchase order is linked to this invoice.</div>
+            )}
+          </article>
+        ) : null}
+
+        {show('invoice-lines') ? (
+          <article className="evidence-card exceptions-card">
+            <div className="evidence-card-heading">
+              <span className="evidence-icon"><FileText size={17} /></span>
+              <h3>Invoice Lines</h3>
+              <span className="count-chip">{analysis.invoice_lines?.length ?? 0}</span>
+            </div>
+            {analysis.invoice_lines?.length ? (
+              <ul className="invoice-line-list">
+                {analysis.invoice_lines.slice(0, 4).map((line) => (
+                  <li key={line.invoice_line_id}>
+                    <span>{line.description}</span>
+                    <strong>{Number(line.quantity ?? 0).toLocaleString()} × {formatMoney(line.unit_price, currency)}</strong>
+                    <small>{formatMoney(line.line_amount, currency)}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="empty-evidence">No line-item records are available.</div>
             )}
           </article>
         ) : null}
@@ -459,22 +546,22 @@ function App() {
                   return;
                 }
                 setSearchQuery(query);
-                const matchingInvoice = availableInvoiceIds.find((invoiceId) => invoiceId.toLowerCase() === query.trim().toLowerCase());
+                const matchingInvoice = invoiceOptions.find((option) => option.invoice_id.toLowerCase() === query.trim().toLowerCase());
                 if (matchingInvoice) {
-                  setSelectedInvoiceId(matchingInvoice);
+                  setSelectedInvoiceId(matchingInvoice.invoice_id);
                   setDecisionAction(null);
                   setDecisionNotice('');
                   setDecisionNoticeType(null);
                 }
               }}
-              onKeyDown={(event) => { if (event.key === 'Enter' && activePage === 'Invoices') searchInvoice(); }}
+              onKeyDown={(event) => { if (event.key === 'Enter' && activePage === 'Invoices') void searchInvoice(); }}
             />
             {activePage === 'Invoices' ? (
               <>
                 <datalist id="invoice-id-options">
-                  {availableInvoiceIds.map((invoiceId) => <option key={invoiceId} value={invoiceId} />)}
+                  {invoiceOptions.map((option) => <option key={option.invoice_id} value={option.invoice_id}>{option.supplier_name}</option>)}
                 </datalist>
-                <button aria-label="Select matching invoice" className="search-submit" onClick={searchInvoice}>
+                <button aria-label="Select matching invoice" className="search-submit" onClick={() => void searchInvoice()}>
                   <ArrowUpRight size={15} />
                 </button>
               </>
@@ -499,7 +586,7 @@ function App() {
             <div>
               <div className="breadcrumb"><span>Workspace</span><ChevronRight size={13} /><strong>Invoices</strong></div>
               <h1>Invoice Review</h1>
-              <p className="page-subtitle">{invoice.supplier_name ?? 'Supplier'} <span>·</span> {invoice.invoice_id ?? selectedInvoiceId}</p>
+              <p className="page-subtitle">{supplier.supplier_name ?? invoice.supplier_name ?? 'Supplier'} <span>·</span> {invoice.invoice_id ?? selectedInvoiceId}</p>
             </div>
             <div className="invoice-controls">
               <button className="icon-button control-button" aria-label="Previous invoice" onClick={() => selectAdjacentInvoice(-1)}>
@@ -524,7 +611,7 @@ function App() {
           <section className="metrics-grid" aria-label="Invoice overview">
             <article className="metric-card metric-green">
               <span className="metric-icon"><FileText size={20} /></span>
-              <div><span className="metric-label">Demo invoices</span><strong className="metric-value">{availableInvoiceIds.length.toString().padStart(2, '0')}</strong><small>In current fixture set</small></div>
+              <div><span className="metric-label">Invoices in dataset</span><strong className="metric-value">{Number(analysis.invoice_count ?? availableInvoiceIds.length).toLocaleString()}</strong><small>Curated finance records</small></div>
             </article>
             <article className="metric-card metric-amber">
               <span className="metric-icon"><AlertTriangle size={20} /></span>
@@ -536,7 +623,7 @@ function App() {
             </article>
             <article className="metric-card metric-rose">
               <span className="metric-icon"><Gauge size={20} /></span>
-              <div><span className="metric-label">Risk level</span><strong className="metric-value metric-risk">{analysis.ai_analysis.risk_level ?? 'Unknown'}</strong><small>Current recommendation</small></div>
+              <div><span className="metric-label">Risk level</span><strong className="metric-value metric-risk">{aiAnalysis.risk_level ?? 'Unknown'}</strong><small>Current recommendation</small></div>
             </article>
           </section>
 
@@ -596,18 +683,18 @@ function App() {
               </div>
 
               <div className="risk-summary">
-                <div className="risk-summary-item"><span><Gauge size={16} /> Risk level</span><strong className={`risk-chip risk-${String(analysis.ai_analysis.risk_level ?? 'low').toLowerCase()}`}>{analysis.ai_analysis.risk_level ?? 'Unknown'}</strong></div>
+                <div className="risk-summary-item"><span><Gauge size={16} /> Risk level</span><strong className={`risk-chip risk-${String(aiAnalysis.risk_level ?? 'low').toLowerCase()}`}>{aiAnalysis.risk_level ?? 'Unknown'}</strong></div>
                 <div className="risk-summary-item"><span><ClipboardList size={16} /> Data status</span><strong>{analysis.ai_enabled ? 'AI assisted' : 'Rules only'}</strong></div>
               </div>
 
               <div className="analysis-summary">
                 <div className="summary-heading"><Sparkles size={15} /><strong>Analysis summary</strong></div>
-                <p>{analysis.ai_analysis.summary}</p>
-                {analysis.ai_analysis.reasons?.length ? <ul>{analysis.ai_analysis.reasons.slice(0, 3).map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
-                {analysis.ai_analysis.evidence?.length ? (
+                <p>{aiAnalysis.summary}</p>
+                {aiAnalysis.reasons?.length ? <ul>{aiAnalysis.reasons.slice(0, 3).map((reason) => <li key={reason}>{reason}</li>)}</ul> : null}
+                {aiAnalysis.evidence?.length ? (
                   <div className="evidence-references">
                     <span>Evidence IDs</span>
-                    <div>{analysis.ai_analysis.evidence.map((evidenceId) => <code key={evidenceId}>{evidenceId}</code>)}</div>
+                    <div>{aiAnalysis.evidence.map((evidenceId) => <code key={evidenceId}>{evidenceId}</code>)}</div>
                   </div>
                 ) : null}
               </div>

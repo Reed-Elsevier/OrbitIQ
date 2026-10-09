@@ -191,6 +191,12 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(23, 89, 74, 
 .payment-value { text-transform: capitalize; }
 .empty-evidence { margin: 9px 0 1px 29px; color: #898d87; font-size: 9px; }
 .exception-list { display: flex; flex-direction: column; gap: 6px; margin: 9px 0 0 29px; padding: 0; list-style: none; }
+.invoice-line-list { display: flex; flex-direction: column; gap: 6px; margin: 9px 0 0 29px; padding: 0; list-style: none; }
+.invoice-line-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 12px; padding: 5px 0; border-top: 1px solid #efeee9; }
+.invoice-line-list li:first-child { border-top: 0; }
+.invoice-line-list li > span { min-width: 0; overflow-wrap: anywhere; color: #535b54; font-size: 9px; }
+.invoice-line-list li > strong { color: #535b54; font-size: 8px; white-space: nowrap; }
+.invoice-line-list li > small { grid-column: 2; color: #2f674f; font-size: 8px; text-align: right; }
 .exception-list li { display: flex; align-items: flex-start; gap: 8px; }
 .exception-name { flex: 0 0 auto; padding: 3px 6px; border-radius: 4px; background: #f8e5df; color: #9d4a3d; font-size: 8px; font-weight: 700; }
 .exception-description { color: #787e77; font-size: 9px; }

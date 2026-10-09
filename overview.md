@@ -20,14 +20,14 @@ The reason:
 - the invoice track has a crisp demo flow: input invoice -> context -> rules -> AI -> recommendation -> human decision.
 
 ## Data readiness and current phase
-The available `C:\Users\andradar\Downloads\center_data` folder contains fraud-related files, not the invoice tables listed below. No invoice dataset has been added to this repository yet. The current five invoice records are synthetic demo fixtures for wiring and UI development only; their counts, amounts, and exception patterns must not be presented as real dataset findings.
+The six curated finance tables are committed under `backend/app/data/finance/`: invoices, invoice lines, invoice exceptions, purchase orders, suppliers, and payments. The data package is synthetic, so counts, amounts, exception patterns, and supplier examples must not be represented as real business outcomes. The unrelated `C:\Users\andradar\Downloads\center_data` fraud files are not used.
 
 Initial handoff:
-- You: continue the API contract, rule checks, and backend integration using the synthetic fixtures until the invoice bundle is located.
-- Lenada: verify where the invoice data bundle is, identify the required invoice datasets/columns once available, and prepare a QA case matrix. Do not analyze the fraud files for invoice insights or report fixture-derived metrics as real findings.
-- Frontend work can proceed against the current API response and synthetic fixtures while the dataset is being confirmed.
+- You: own the CSV-backed context loader, deterministic rules, Bedrock integration, and hard gates.
+- Lenada: validate the curated schema and edge cases, identify representative demo invoices, and prepare a QA matrix and limitations note. Do not use the fraud files for invoice insights or present synthetic fixture values as real findings.
+- Frontend is wired to the curated API response and can continue using the synthetic dataset for the demo.
 
-The current scaffold does not yet include Bedrock or real-data loaders. Approve/reject/escalate actions are persisted locally in SQLite at `backend/app/data/decisions.db`; the current invoice records remain synthetic fixtures.
+The API builds an ignored SQLite cache from the six CSVs at `backend/app/data/finance/finance.db`. Bedrock Claude is optional; when credentials are absent the API uses a rules-only fallback and requires human review. Approve/reject/escalate actions are persisted locally in `backend/app/data/decisions.db`.
 
 ## Team split
 
@@ -44,9 +44,9 @@ Own the live analysis path:
 - endpoint: `GET /api/invoices/{invoice_id}/analyze`
 
 Your deliverable:
-- one real invoice successfully analyzed,
+- one supplied invoice record successfully analyzed,
 - structured response payload returned from backend,
-- final recommendation and decision story generated from real data.
+- final recommendation and decision story grounded in the provided synthetic data and clearly disclosed as such.
 
 ### Lenada — Data + QA + pitch support
 Own the evidence and demo quality:
