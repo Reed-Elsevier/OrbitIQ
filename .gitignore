@@ -4,6 +4,7 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 *.tsbuildinfo
 backend/.venv/
+backend/app/data/*.db
 __pycache__/
 *.pyc
 .DS_Store

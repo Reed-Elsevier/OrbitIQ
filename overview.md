@@ -27,7 +27,7 @@ Initial handoff:
 - Lenada: verify where the invoice data bundle is, identify the required invoice datasets/columns once available, and prepare a QA case matrix. Do not analyze the fraud files for invoice insights or report fixture-derived metrics as real findings.
 - Frontend work can proceed against the current API response and synthetic fixtures while the dataset is being confirmed.
 
-The current scaffold does not yet include Bedrock, SQLite decision logging, real-data loaders, or persisted approve/reject/escalate actions. Those belong in later implementation phases.
+The current scaffold does not yet include Bedrock or real-data loaders. Approve/reject/escalate actions are persisted locally in SQLite at `backend/app/data/decisions.db`; the current invoice records remain synthetic fixtures.
 
 ## Team split
 
