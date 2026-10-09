@@ -22,6 +22,11 @@ def _duplicate_invoice(invoice: Dict[str, Any]) -> bool:
     return False
 
 
+def _amounts_are_near(first_amount: float, second_amount: float) -> bool:
+    amount_delta = abs(first_amount - second_amount)
+    return amount_delta <= 500 and amount_delta / max(first_amount, 1) <= 0.05
+
+
 def _near_duplicate(invoice: Dict[str, Any]) -> bool:
     supplier_id = invoice["supplier_id"]
     for invoice_id, candidate in INVOICES.items():
@@ -29,9 +34,13 @@ def _near_duplicate(invoice: Dict[str, Any]) -> bool:
             continue
         if candidate["supplier_id"] != supplier_id:
             continue
-        amount_delta = abs(candidate["gross_amount"] - invoice["gross_amount"])
-        if amount_delta <= 500 and abs(candidate["gross_amount"] - invoice["gross_amount"]) / max(invoice["gross_amount"], 1) <= 0.05:
+        if _amounts_are_near(invoice["gross_amount"], candidate["gross_amount"]):
             return True
+
+    for candidate in PREVIOUS_INVOICES.get(supplier_id, []):
+        if _amounts_are_near(invoice["gross_amount"], candidate["amount"]):
+            return True
+
     return False
 
 
@@ -41,12 +50,18 @@ def _build_ai_analysis(invoice: Dict[str, Any], po: Dict[str, Any], supplier: Di
 
     if "MISSING_PO" in rule_flags:
         reasons.append("Missing purchase order reference")
+    if "PO_NOT_FOUND" in rule_flags:
+        reasons.append("Referenced purchase order was not found")
     if "PO_AMOUNT_EXCEEDED" in rule_flags:
         reasons.append("Invoice amount exceeds the approved PO")
     if "DUPLICATE_INVOICE" in rule_flags:
         reasons.append("Duplicate invoice number detected")
+    if "NEAR_DUPLICATE" in rule_flags:
+        reasons.append("Possible near-duplicate invoice detected")
     if "BANK_DETAILS_CHANGED" in rule_flags:
         reasons.append("Bank details changed exception requires review")
+    if invoice["gross_amount"] > 15000:
+        reasons.append("High-value invoice requires approval review")
     if not reasons:
         reasons.append("Routine invoice pattern with no blocking control violations")
 
@@ -61,10 +76,10 @@ def _build_ai_analysis(invoice: Dict[str, Any], po: Dict[str, Any], supplier: Di
 
     recommendation = "AUTO-PROCESS CANDIDATE"
     risk_level = "low"
-    if "MISSING_PO" in rule_flags or "DUPLICATE_INVOICE" in rule_flags or "BANK_DETAILS_CHANGED" in rule_flags:
+    if any(flag in rule_flags for flag in ("MISSING_PO", "PO_NOT_FOUND", "DUPLICATE_INVOICE", "BANK_DETAILS_CHANGED")):
         recommendation = "ESCALATE"
         risk_level = "high"
-    elif "PO_AMOUNT_EXCEEDED" in rule_flags or "EXISTING_EXCEPTION" in rule_flags or supplier["exception_history"] > 1:
+    elif any(flag in rule_flags for flag in ("NEAR_DUPLICATE", "PO_AMOUNT_EXCEEDED", "EXISTING_EXCEPTION")) or supplier["exception_history"] > 1 or invoice["gross_amount"] > 15000:
         recommendation = "REVIEW"
         risk_level = "medium"
 
@@ -90,7 +105,6 @@ def analyze_invoice(invoice_id: str) -> Dict[str, Any] | None:
     po = PURCHASE_ORDERS.get(invoice["po_id"]) if invoice["po_id"] else None
     exceptions = INVOICE_EXCEPTIONS.get(invoice_id, [])
     payment = PAYMENTS.get(invoice_id, {})
-    previous_invoices = PREVIOUS_INVOICES.get(invoice["supplier_id"], [])
 
     checks: List[Dict[str, Any]] = []
     rule_flags: List[str] = []
@@ -98,7 +112,10 @@ def analyze_invoice(invoice_id: str) -> Dict[str, Any] | None:
     if invoice["po_id"] is None:
         checks.append({"code": "MISSING_PO", "status": "fail", "title": "Missing PO", "details": "Invoice is missing a purchase order reference."})
         rule_flags.append("MISSING_PO")
-    elif po and invoice["gross_amount"] > po["po_amount"]:
+    elif po is None:
+        checks.append({"code": "PO_NOT_FOUND", "status": "fail", "title": "PO not found", "details": f"Purchase order {invoice['po_id']} could not be found."})
+        rule_flags.append("PO_NOT_FOUND")
+    elif invoice["gross_amount"] > po["po_amount"]:
         checks.append({"code": "PO_AMOUNT_EXCEEDED", "status": "warning", "title": "PO amount mismatch", "details": f"Invoice gross amount {invoice['gross_amount']} exceeds PO limit {po['po_amount']}."})
         rule_flags.append("PO_AMOUNT_EXCEEDED")
     else:
@@ -131,9 +148,9 @@ def analyze_invoice(invoice_id: str) -> Dict[str, Any] | None:
         checks.append({"code": "PAYMENT_STATUS", "status": "warning", "title": "Payment status", "details": "Payment has not been matched or is on hold."})
 
     recommendation = "AUTO-PROCESS CANDIDATE"
-    if "MISSING_PO" in rule_flags or "DUPLICATE_INVOICE" in rule_flags or "BANK_DETAILS_CHANGED" in rule_flags:
+    if any(flag in rule_flags for flag in ("MISSING_PO", "PO_NOT_FOUND", "DUPLICATE_INVOICE", "BANK_DETAILS_CHANGED")):
         recommendation = "ESCALATE"
-    elif "PO_AMOUNT_EXCEEDED" in rule_flags or "EXISTING_EXCEPTION" in rule_flags or invoice["gross_amount"] > 15000:
+    elif any(flag in rule_flags for flag in ("NEAR_DUPLICATE", "PO_AMOUNT_EXCEEDED", "EXISTING_EXCEPTION")) or invoice["gross_amount"] > 15000:
         recommendation = "REVIEW"
 
     ai_analysis = _build_ai_analysis(invoice, po or {}, supplier, exceptions, rule_flags)

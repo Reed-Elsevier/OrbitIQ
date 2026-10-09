@@ -17,9 +17,11 @@ Build a thin end-to-end invoice decision flow: invoice context -> deterministic 
 ## Current phase
 The first shared scaffold is ready for parallel work:
 - FastAPI endpoint with deterministic checks and clearly labeled sample records.
-- React dashboard that calls the API and can run in demo mode.
-- Invoice demo data is synthetic; do not use it as real hackathon evidence.
-- Bedrock, real invoice data loading, SQLite decisions, and decision-action wiring are not implemented yet.
+- React dashboard with invoice review and a SQLite-backed Decision Log page.
+- Approve/reject/escalate actions are persisted locally in SQLite.
+- Six curated invoice source tables are included under `backend/app/data/finance/`; the provided data is synthetic.
+- The API still uses the small demo fixtures until a loader for the curated tables is implemented.
+- Bedrock integration is not implemented yet.
 
 The available `C:\Users\andradar\Downloads\center_data` folder was inspected and contains fraud-related data, not the invoice tables required by this PRD. Lenada should first locate/confirm the invoice dataset source; until then, keep data investigation to the required schema and QA scenarios, and do not report synthetic values as dataset findings.
 
@@ -43,6 +45,8 @@ npm.cmd run dev
 ```
 
 Open `http://localhost:5173`. The API health check is at `http://localhost:8000/health`; the invoice endpoint is `http://localhost:8000/api/invoices/INV-1001/analyze`.
+
+Decision actions are saved to `backend\app\data\decisions.db`. The API accepts `POST /api/invoices/{invoice_id}/decisions` with `{"action":"approve"}`, `{"action":"reject"}`, or `{"action":"escalate"}`. Use `GET /api/decisions` to list entries, optionally filtered with `?invoice_id=INV-1001`. Set `ORBITIQ_DECISIONS_DB` to use a different SQLite file.
 
 ## Quick priority
 > One invoice. One button. One complete decision.
