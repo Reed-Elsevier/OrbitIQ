@@ -19,8 +19,9 @@ The first shared scaffold is ready for parallel work:
 - FastAPI endpoint with deterministic checks and clearly labeled sample records.
 - React dashboard with invoice review and a SQLite-backed Decision Log page.
 - Approve/reject/escalate actions are persisted locally in SQLite.
-- Invoice demo data is synthetic; do not use it as real hackathon evidence.
-- Bedrock and real invoice data loading are not implemented yet.
+- Six curated invoice source tables are included under `backend/app/data/finance/`; the provided data is synthetic.
+- The API still uses the small demo fixtures until a loader for the curated tables is implemented.
+- Bedrock integration is not implemented yet.
 
 The available `C:\Users\andradar\Downloads\center_data` folder was inspected and contains fraud-related data, not the invoice tables required by this PRD. Lenada should first locate/confirm the invoice dataset source; until then, keep data investigation to the required schema and QA scenarios, and do not report synthetic values as dataset findings.
 

@@ -9,3 +9,11 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+/center_data/
+backend/app/data/finance/*
+!backend/app/data/finance/invoices.csv
+!backend/app/data/finance/invoice_lines.csv
+!backend/app/data/finance/invoice_exceptions.csv
+!backend/app/data/finance/purchase_orders.csv
+!backend/app/data/finance/suppliers.csv
+!backend/app/data/finance/payments.csv
