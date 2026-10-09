@@ -6,7 +6,6 @@ import {
   Building2,
   CalendarDays,
   Check,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleAlert,
@@ -137,6 +136,7 @@ const statusStyleMap: Record<CheckStatus, { label: string; className: string }> 
 type ContextTab = 'all' | 'purchase-order' | 'invoice-lines' | 'history' | 'payments' | 'exceptions';
 type DecisionAction = 'Approve' | 'Reject' | 'Escalate';
 type DecisionActionCode = 'approve' | 'reject' | 'escalate';
+type DemoRole = 'AP Analyst' | 'AP Team Lead' | 'AP Manager';
 type WorkspacePage = 'Invoices' | 'Decision Log';
 type DecisionRecord = { id: number; invoice_id: string; action: DecisionActionCode; created_at: string };
 type DecisionFilter = 'all' | DecisionActionCode;
@@ -186,6 +186,7 @@ function formatTimestamp(value: string) {
 
 function App() {
   const [selectedInvoiceId, setSelectedInvoiceId] = useState('INV0000001');
+  const [demoRole, setDemoRole] = useState<DemoRole>('AP Analyst');
   const [analysis, setAnalysis] = useState<AnalysisResponse>(MOCK_ANALYSIS);
   const [invoiceOptions, setInvoiceOptions] = useState<InvoiceOption[]>([]);
   const [loading, setLoading] = useState(false);
@@ -574,8 +575,14 @@ function App() {
             </button>
             <div className="profile-block">
               <span className="profile-avatar">AP</span>
-              <span className="profile-copy"><strong>AP Analyst</strong><small>Review workspace</small></span>
-              <ChevronDown size={15} />
+              <span className="profile-copy">
+                <select className="profile-role-select" aria-label="Demo role" value={demoRole} onChange={(event) => setDemoRole(event.target.value as DemoRole)}>
+                  <option value="AP Analyst">AP Analyst</option>
+                  <option value="AP Team Lead">AP Team Lead</option>
+                  <option value="AP Manager">AP Manager</option>
+                </select>
+                <small>Review workspace</small>
+              </span>
             </div>
           </div>
         </header>
