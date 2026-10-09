@@ -19,6 +19,16 @@ The reason:
 - the PRD defines a clear AI + deterministic control pattern,
 - the invoice track has a crisp demo flow: input invoice -> context -> rules -> AI -> recommendation -> human decision.
 
+## Data readiness and current phase
+The available `C:\Users\andradar\Downloads\center_data` folder contains fraud-related files, not the invoice tables listed below. No invoice dataset has been added to this repository yet. The current five invoice records are synthetic demo fixtures for wiring and UI development only; their counts, amounts, and exception patterns must not be presented as real dataset findings.
+
+Initial handoff:
+- You: continue the API contract, rule checks, and backend integration using the synthetic fixtures until the invoice bundle is located.
+- Lenada: verify where the invoice data bundle is, identify the required invoice datasets/columns once available, and prepare a QA case matrix. Do not analyze the fraud files for invoice insights or report fixture-derived metrics as real findings.
+- Frontend work can proceed against the current API response and synthetic fixtures while the dataset is being confirmed.
+
+The current scaffold does not yet include Bedrock, SQLite decision logging, real-data loaders, or persisted approve/reject/escalate actions. Those belong in later implementation phases.
+
 ## Team split
 
 ### You — Backend + AI lead
