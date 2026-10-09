@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Literal
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
 logger = logging.getLogger(__name__)
 
